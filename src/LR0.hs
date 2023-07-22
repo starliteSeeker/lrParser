@@ -42,6 +42,23 @@ testGrammer =
     ]
   )
 
+notlr0 :: Grammar
+notlr0 =
+  ( NTerm "S",
+    [ (NTerm "S", [(0, [N $ NTerm "E", T $ Term "$"])]),
+      ( NTerm "E",
+        [ (1, [N $ NTerm "E", T $ Term "+", N $ NTerm "T"]),
+          (2, [T $ Term "T"])
+        ]
+      ),
+      ( NTerm "T",
+        [ (3, [N $ NTerm "T", T $ Term "*", T $ Term "#"]),
+          (4, [T $ Term "#"])
+        ]
+      )
+    ]
+  )
+
 g2 :: Grammar
 g2 =
   ( NTerm "E",
@@ -87,6 +104,7 @@ type State = Int
 data Action = Shift State | Reduce Index | Accept
   deriving (Show, Eq)
 
+-- 3 layers of where :)
 parseTable :: Grammar -> A.Seq (S.Set RHS, M.Map Symbol Action)
 parseTable gram@(start, rules) = setAccept $ fst $ closure f (A.singleton (seed, M.empty), 0)
   where
@@ -119,7 +137,7 @@ parseTable gram@(start, rules) = setAccept $ fst $ closure f (A.singleton (seed,
     setAccept = A.adjust' (Bifunctor.second (insertUnique (N start) Accept)) 0
 
 insertUnique :: Symbol -> Action -> M.Map Symbol Action -> M.Map Symbol Action
-insertUnique = M.insertWith (\a b -> error (show a ++ "collides with" ++ show b))
+insertUnique = M.insertWith (\a b -> error (show a ++ " collides with " ++ show b))
 
 -- create new state from nonterminal
 genState :: NTerm -> Grammar -> S.Set RHS

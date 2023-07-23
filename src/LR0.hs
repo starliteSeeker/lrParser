@@ -48,7 +48,7 @@ notlr0 =
     [ (NTerm "S", [(0, [N $ NTerm "E", T $ Term "$"])]),
       ( NTerm "E",
         [ (1, [N $ NTerm "E", T $ Term "+", N $ NTerm "T"]),
-          (2, [T $ Term "T"])
+          (2, [N $ NTerm "T"])
         ]
       ),
       ( NTerm "T",
@@ -104,40 +104,48 @@ type State = Int
 data Action = Shift State | Reduce Index | Accept
   deriving (Show, Eq)
 
--- 3 layers of where :)
 parseTable :: Grammar -> A.Seq (S.Set RHS, M.Map Symbol Action)
 parseTable gram@(start, rules) = setAccept $ fst $ closure f (A.singleton (seed, M.empty), 0)
   where
+    syms = symbols rules
     seed = genState start gram
     -- fill in table for state n
     f :: (A.Seq (S.Set RHS, M.Map Symbol Action), Int) -> (A.Seq (S.Set RHS, M.Map Symbol Action), Int)
     f (sq, n) = case sq A.!? n of
-      Just (rhs, _) -> (S.foldr g sq rhs, n + 1)
-      Nothing -> (sq, n)
+      Just (rhs, _) -> case Bifunctor.bimap S.toList S.toList (S.partition ((== []) . snd) rhs) of
+        -- no reduce possible
+        ([], _) -> (S.foldr (g rhs) sq syms, n + 1)
+        -- only one reduce possible
+        ([(i, _)], []) ->
+          (A.adjust' (Bifunctor.second (const $ M.fromSet (const $ Reduce i) syms)) n sq, n + 1)
+        -- multiple reduces possible
+        _ -> error "not lr0, multiple reduces possible"
+      Nothing -> (sq, n) -- all states filled in
       where
         -- decide whether a new state is needed for taking one step in a RHS
-        g :: RHS -> A.Seq (S.Set RHS, M.Map Symbol Action) -> A.Seq (S.Set RHS, M.Map Symbol Action)
-        -- reduce
-        g (i, []) a = A.adjust' (\(s, m) -> (s, M.fromList [(elem, Reduce i) | elem <- S.toList (symbols rules)])) n a
-        -- skip empty
-        g (i, T Empty : ls) a = g (i, ls) a
-        -- write entry and create new state if needed
-        g (i, l : ls) a =
-          let nextState = S.insert (i, ls) $ newState ls
-           in case A.findIndexL ((== nextState) . fst) a of
-                Just newi -> A.adjust' (Bifunctor.second (insertUnique l (Shift $ newi))) n a
-                Nothing -> A.adjust' (Bifunctor.second (insertUnique l (Shift $ A.length a))) n a A.|> (nextState, M.empty)
-          where
-            -- create new state from RHS
-            newState [] = S.singleton (i, [])
-            newState (T Empty : rs) = newState rs
-            newState (r : rs) = case r of
-              N n -> genState n gram
-              T t -> S.singleton (i, r : rs)
+        g :: S.Set RHS -> Symbol -> A.Seq (S.Set RHS, M.Map Symbol Action) -> A.Seq (S.Set RHS, M.Map Symbol Action)
+        g curr s a =
+          let nextState = stepState gram s curr
+           in if S.null nextState
+                then a
+                else case A.findIndexL ((== nextState) . fst) a of
+                  -- next state already exists in table
+                  Just nexti -> A.adjust' (Bifunctor.second (insertUnique s (Shift nexti))) n a
+                  -- add new state to table
+                  Nothing -> A.adjust' (Bifunctor.second (insertUnique s (Shift $ A.length a))) n a A.|> (nextState, M.empty)
     setAccept = A.adjust' (Bifunctor.second (insertUnique (N start) Accept)) 0
 
 insertUnique :: Symbol -> Action -> M.Map Symbol Action -> M.Map Symbol Action
-insertUnique = M.insertWith (\a b -> error (show a ++ " collides with " ++ show b))
+insertUnique = M.insertWith (\v vv -> error (show v ++ " collides with " ++ show vv))
+
+-- move from one state to the next
+stepState :: Grammar -> Symbol -> S.Set RHS -> S.Set RHS
+stepState gram sym old = S.unions $ S.map f old
+  where
+    f (i, l : ls) | l == sym = case ls of
+      (N n) : as -> S.insert (i, ls) $ genState n gram
+      x -> S.singleton (i, x)
+    f _ = S.empty
 
 -- create new state from nonterminal
 genState :: NTerm -> Grammar -> S.Set RHS

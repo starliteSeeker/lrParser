@@ -3,7 +3,7 @@ module LR0 (closure) where
 import qualified Data.Bifunctor as Bifunctor
 import Data.Function (on)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (fromJust, isJust, isNothing)
 import qualified Data.Sequence as A
 import qualified Data.Set as S
 
@@ -30,8 +30,8 @@ type Index = Int -- index for rules
 
 type Grammar = (NTerm, [Rule]) -- (start symbol, rewriting rules)
 
-testGrammer :: Grammar
-testGrammer =
+testGrammar :: Grammar
+testGrammar =
   ( NTerm "S",
     [ (NTerm "S", [(0, [N $ NTerm "E", T $ Term "$"])]),
       ( NTerm "E",
@@ -76,13 +76,12 @@ symbols rules = S.unions $ map (S.fromList . f) rules
     f (n, nss) = N n : concatMap snd nss
 
 closure :: Eq a => (a -> a) -> a -> a
--- closure f x = let next = f x in if x == next then x else closure f next
-closure = closureBy (==)
+closure f x = let next = f x in if x == next then x else closure f next
 
-closureBy :: (a -> a -> Bool) -> (a -> a) -> a -> a
-closureBy eq f x = let next = f x in if x `eq` next then x else closureBy eq f next
+-- closureBy :: (a -> a -> Bool) -> (a -> a) -> a -> a
+-- closureBy eq f x = let next = f x in if x `eq` next then x else closureBy eq f next
 
--- calculate first set for a grammer
+-- calculate first set for a grammar
 first :: Grammar -> M.Map NTerm (S.Set Term)
 first (_, rules) = closure (\m -> foldr f m rules) seed
   where
@@ -98,6 +97,31 @@ first (_, rules) = closure (\m -> foldr f m rules) seed
           (T Empty) -> f' xs
           (T t) -> S.singleton t
         f' [] = S.singleton Empty
+
+-- calculate follow set for a grammar
+follow :: Grammar -> M.Map NTerm (S.Set Term)
+follow gram@(start, rules) = closure (\m -> foldr f m rules) seed
+  where
+    firstSet = first gram
+    seed = M.fromList $ [if e == start then (e, S.singleton (Term "$")) else (e, S.empty) | N e <- S.elems $ symbols rules]
+    -- update table with rule
+    f :: Rule -> M.Map NTerm (S.Set Term) -> M.Map NTerm (S.Set Term)
+    f (lhs, rhss) m = foldr (g . snd) m rhss
+      where
+        -- update table with [Symbol]
+        g :: [Symbol] -> M.Map NTerm (S.Set Term) -> M.Map NTerm (S.Set Term)
+        g (T t : trail) m = g trail m
+        g (N n : trail) m = g trail $ M.adjust (follow' trail) n m
+          where
+            -- update entry with [Symbol]
+            follow' :: [Symbol] -> S.Set Term -> S.Set Term
+            follow' (T Empty : ls) s = follow' ls s
+            follow' (T t : _) s = S.insert t s
+            follow' (N n : ls) s =
+              let (empties, fs) = S.partition (== Empty) $ fromJust $ M.lookup n firstSet
+               in if S.null empties then S.union fs s else S.union (follow' ls fs) s
+            follow' [] s = S.union (fromJust $ M.lookup lhs m) s
+        g [] m = m
 
 type State = Int
 
@@ -151,13 +175,13 @@ stepState gram sym old = S.unions $ S.map f old
 genState :: NTerm -> Grammar -> S.Set RHS
 genState n (start, rules) = fst $ closure f (S.fromList seed, seed)
   where
-    seed = fromMaybe (error "you what") $ lookup n rules
+    seed = fromJust $ lookup n rules
     -- process 1 element in the queue
     f :: (S.Set RHS, [RHS]) -> (S.Set RHS, [RHS])
     f (set, q : qs) = foldr tryInsert (set, qs) next
       where
         next = case head $ snd q of
-          N n -> fromMaybe undefined $ lookup n rules
+          N n -> fromJust $ lookup n rules
           T t -> []
         tryInsert a (s, ls) = if not (S.member a s) then (S.insert a s, a : ls) else (s, ls)
     f a = a

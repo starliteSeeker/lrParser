@@ -2,6 +2,7 @@ module Parser where
 
 import qualified Data.Bifunctor as Bifunctor
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromJust)
 import qualified Data.Sequence as A
 import qualified Data.Set as S
 import Parser.Internal
@@ -32,9 +33,9 @@ lr0 gram@(start, rules) = setAccept $ fmap snd $ fst $ closure f (A.singleton (s
                 then a
                 else case A.findIndexL ((== nextState) . fst) a of
                   -- next state already exists in table
-                  Just nexti -> A.adjust' (Bifunctor.second (insertUnique s (Shift nexti))) n a
+                  Just nexti -> writeTableUnique n s (Shift nexti) a
                   -- add new state to table
-                  Nothing -> A.adjust' (Bifunctor.second (insertUnique s (Shift $ A.length a))) n a A.|> (nextState, M.empty)
+                  Nothing -> writeTableUnique n s (Shift $ A.length a) a A.|> (nextState, M.empty)
     setAccept = A.adjust' (insertUnique (N start) Accept) 0
 
 -- maybe some way to reduce repeated code from lr0
@@ -48,8 +49,9 @@ slr1 gram@(start, rules) = setAccept $ fmap snd $ fst $ closure f (A.singleton (
     f :: (A.Seq (S.Set RHS, M.Map Symbol Action), Int) -> (A.Seq (S.Set RHS, M.Map Symbol Action), Int)
     f (sq, n) = case sq A.!? n of
       Just (rhs, _) ->
-        let (shifts, reduces) = (S.partition ((== []) . snd) rhs)
-         in (S.foldr (g shifts) sq syms, n + 1) -- where is lhs
+        let (reduces, shifts) = (S.partition ((== []) . snd) rhs)
+            foldShifts = S.foldr (g shifts) sq syms
+         in (S.foldr (\((i, lhs), _) s -> S.foldr (\t a -> writeTableUnique n (T t) (Reduce (i, lhs)) a) s (fromJust $ M.lookup lhs followSet)) foldShifts reduces, n + 1)
       Nothing -> (sq, n) -- all states filled in
       where
         -- decide whether a new state is needed for taking one step in a RHS
@@ -60,10 +62,13 @@ slr1 gram@(start, rules) = setAccept $ fmap snd $ fst $ closure f (A.singleton (
                 then a
                 else case A.findIndexL ((== nextState) . fst) a of
                   -- next state already exists in table
-                  Just nexti -> A.adjust' (Bifunctor.second (insertUnique s (Shift nexti))) n a
+                  Just nexti -> writeTableUnique n s (Shift nexti) a
                   -- add new state to table
                   Nothing -> A.adjust' (Bifunctor.second (insertUnique s (Shift $ A.length a))) n a A.|> (nextState, M.empty)
     setAccept = A.adjust' (insertUnique (N start) Accept) 0
 
 insertUnique :: Symbol -> Action -> M.Map Symbol Action -> M.Map Symbol Action
 insertUnique = M.insertWith (\v vv -> error (show v ++ " collides with " ++ show vv))
+
+writeTableUnique :: State -> Symbol -> Action -> A.Seq (S.Set RHS, M.Map Symbol Action) -> A.Seq (S.Set RHS, M.Map Symbol Action)
+writeTableUnique i j x = A.adjust' (Bifunctor.second (insertUnique j x)) i

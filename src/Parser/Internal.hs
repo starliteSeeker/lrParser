@@ -23,17 +23,17 @@ type RHS = (Index, [Symbol])
 
 type Rule = (NTerm, [RHS])
 
-type Index = Int -- index for rules
+type Index = (Int, NTerm) -- index for rules
 
 type Grammar = (NTerm, [Rule]) -- (start symbol, rewriting rules)
 
 testGrammar :: Grammar
 testGrammar =
   ( NTerm "S",
-    [ (NTerm "S", [(0, [N $ NTerm "E", T $ Term "$"])]),
+    [ (NTerm "S", [((0, NTerm "S"), [N $ NTerm "E", T $ Term "$"])]),
       ( NTerm "E",
-        [ (1, [T $ Term "+", N $ NTerm "E", N $ NTerm "E"]),
-          (2, [T $ Term "#"])
+        [ ((1, NTerm "E"), [T $ Term "+", N $ NTerm "E", N $ NTerm "E"]),
+          ((2, NTerm "E"), [T $ Term "#"])
         ]
       )
     ]
@@ -50,24 +50,24 @@ g2 =
       (NTerm "F", [(6, [T $ Term "(", N $ NTerm "E", T $ Term ")"]), (7, [T $ Term "id"])])
     ]
   )
+-}
 
 notlr0 :: Grammar
 notlr0 =
   ( NTerm "S",
-    [ (NTerm "S", [(0, [N $ NTerm "E", T $ Term "$"])]),
+    [ (NTerm "S", [((0, NTerm "S"), [N $ NTerm "E", T $ Term "$"])]),
       ( NTerm "E",
-        [ (1, [N $ NTerm "E", T $ Term "+", N $ NTerm "T"]),
-          (2, [N $ NTerm "T"])
+        [ ((1, NTerm "E"), [N $ NTerm "E", T $ Term "+", N $ NTerm "T"]),
+          ((2, NTerm "E"), [N $ NTerm "T"])
         ]
       ),
       ( NTerm "T",
-        [ (3, [N $ NTerm "T", T $ Term "*", T $ Term "#"]),
-          (4, [T $ Term "#"])
+        [ ((3, NTerm "T"), [N $ NTerm "T", T $ Term "*", T $ Term "#"]),
+          ((4, NTerm "T"), [T $ Term "#"])
         ]
       )
     ]
   )
--}
 
 symbols :: [Rule] -> S.Set Symbol
 symbols rules = S.unions $ map (S.fromList . f) rules
@@ -150,6 +150,3 @@ genState n (start, rules) = fst $ closure f (S.fromList seed, seed)
           T t -> []
         tryInsert a (s, ls) = if not (S.member a s) then (S.insert a s, a : ls) else (s, ls)
     f a = a
-
-ruleIdxToLHS :: Grammar -> Index -> NTerm
-ruleIdxToLHS = undefined

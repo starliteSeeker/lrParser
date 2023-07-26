@@ -1,10 +1,7 @@
-module LR0 (closure) where
+module Parser.Internal where
 
-import qualified Data.Bifunctor as Bifunctor
-import Data.Function (on)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromJust, isJust, isNothing)
-import qualified Data.Sequence as A
+import Data.Maybe (fromJust)
 import qualified Data.Set as S
 
 data Symbol
@@ -42,6 +39,18 @@ testGrammar =
     ]
   )
 
+{-
+g2 :: Grammar
+g2 =
+  ( NTerm "E",
+    [ (NTerm "E", [(0, [N $ NTerm "T", N $ NTerm "E'"])]),
+      (NTerm "E'", [(1, [T $ Term "+", N $ NTerm "T", N $ NTerm "E'"]), (2, [T Empty])]),
+      (NTerm "T", [(3, [N $ NTerm "F", N $ NTerm "T'"])]),
+      (NTerm "T'", [(4, [T $ Term "*", N $ NTerm "F", N $ NTerm "T'"]), (5, [T Empty])]),
+      (NTerm "F", [(6, [T $ Term "(", N $ NTerm "E", T $ Term ")"]), (7, [T $ Term "id"])])
+    ]
+  )
+
 notlr0 :: Grammar
 notlr0 =
   ( NTerm "S",
@@ -58,17 +67,7 @@ notlr0 =
       )
     ]
   )
-
-g2 :: Grammar
-g2 =
-  ( NTerm "E",
-    [ (NTerm "E", [(0, [N $ NTerm "T", N $ NTerm "E'"])]),
-      (NTerm "E'", [(1, [T $ Term "+", N $ NTerm "T", N $ NTerm "E'"]), (2, [T Empty])]),
-      (NTerm "T", [(3, [N $ NTerm "F", N $ NTerm "T'"])]),
-      (NTerm "T'", [(4, [T $ Term "*", N $ NTerm "F", N $ NTerm "T'"]), (5, [T Empty])]),
-      (NTerm "F", [(6, [T $ Term "(", N $ NTerm "E", T $ Term ")"]), (7, [T $ Term "id"])])
-    ]
-  )
+-}
 
 symbols :: [Rule] -> S.Set Symbol
 symbols rules = S.unions $ map (S.fromList . f) rules
@@ -128,40 +127,6 @@ type State = Int
 data Action = Shift State | Reduce Index | Accept
   deriving (Show, Eq)
 
-parseTable :: Grammar -> A.Seq (S.Set RHS, M.Map Symbol Action)
-parseTable gram@(start, rules) = setAccept $ fst $ closure f (A.singleton (seed, M.empty), 0)
-  where
-    syms = symbols rules
-    seed = genState start gram
-    -- fill in table for state n
-    f :: (A.Seq (S.Set RHS, M.Map Symbol Action), Int) -> (A.Seq (S.Set RHS, M.Map Symbol Action), Int)
-    f (sq, n) = case sq A.!? n of
-      Just (rhs, _) -> case Bifunctor.bimap S.toList S.toList (S.partition ((== []) . snd) rhs) of
-        -- no reduce possible
-        ([], _) -> (S.foldr (g rhs) sq syms, n + 1)
-        -- only one reduce possible
-        ([(i, _)], []) ->
-          (A.adjust' (Bifunctor.second (const $ M.fromSet (const $ Reduce i) syms)) n sq, n + 1)
-        -- multiple reduces possible
-        _ -> error "not lr0, multiple reduces possible"
-      Nothing -> (sq, n) -- all states filled in
-      where
-        -- decide whether a new state is needed for taking one step in a RHS
-        g :: S.Set RHS -> Symbol -> A.Seq (S.Set RHS, M.Map Symbol Action) -> A.Seq (S.Set RHS, M.Map Symbol Action)
-        g curr s a =
-          let nextState = stepState gram s curr
-           in if S.null nextState
-                then a
-                else case A.findIndexL ((== nextState) . fst) a of
-                  -- next state already exists in table
-                  Just nexti -> A.adjust' (Bifunctor.second (insertUnique s (Shift nexti))) n a
-                  -- add new state to table
-                  Nothing -> A.adjust' (Bifunctor.second (insertUnique s (Shift $ A.length a))) n a A.|> (nextState, M.empty)
-    setAccept = A.adjust' (Bifunctor.second (insertUnique (N start) Accept)) 0
-
-insertUnique :: Symbol -> Action -> M.Map Symbol Action -> M.Map Symbol Action
-insertUnique = M.insertWith (\v vv -> error (show v ++ " collides with " ++ show vv))
-
 -- move from one state to the next
 stepState :: Grammar -> Symbol -> S.Set RHS -> S.Set RHS
 stepState gram sym old = S.unions $ S.map f old
@@ -185,3 +150,6 @@ genState n (start, rules) = fst $ closure f (S.fromList seed, seed)
           T t -> []
         tryInsert a (s, ls) = if not (S.member a s) then (S.insert a s, a : ls) else (s, ls)
     f a = a
+
+ruleIdxToLHS :: Grammar -> Index -> NTerm
+ruleIdxToLHS = undefined

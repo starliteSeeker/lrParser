@@ -21,7 +21,7 @@ maintainer:         albert.lee.taiwan@gmail.com
 extra-source-files:
 
 library
-    exposed-modules:  LR0
+    exposed-modules:  Parser Parser.Internal
 
     -- Modules included in this library but not exported.
     -- other-modules:

@@ -19,21 +19,22 @@ data Term
   | Term String
   deriving (Show, Eq, Ord)
 
-type RHS = (Index, [Symbol])
+type Grammar = (NTerm, [Rules]) -- (start symbol, rewriting rules)
 
-type Rule = (NTerm, [RHS])
+type Rules = (NTerm, [RHS])
 
-type Index = (Int, NTerm) -- index for rules
+data RHS = RHS {index :: RuleIdx, lhs :: NTerm, prod :: [Symbol]}
+  deriving (Eq, Ord)
 
-type Grammar = (NTerm, [Rule]) -- (start symbol, rewriting rules)
+type RuleIdx = Int -- index for rules to reference when reducing
 
 testGrammar :: Grammar
 testGrammar =
   ( NTerm "S",
-    [ (NTerm "S", [((0, NTerm "S"), [N $ NTerm "E", T $ Term "$"])]),
+    [ (NTerm "S", [RHS 0 (NTerm "S") [N $ NTerm "E", T $ Term "$"]]),
       ( NTerm "E",
-        [ ((1, NTerm "E"), [T $ Term "+", N $ NTerm "E", N $ NTerm "E"]),
-          ((2, NTerm "E"), [T $ Term "#"])
+        [ RHS 1 (NTerm "E") [T $ Term "+", N $ NTerm "E", N $ NTerm "E"],
+          RHS 2 (NTerm "E") [T $ Term "#"]
         ]
       )
     ]
@@ -50,7 +51,6 @@ g2 =
       (NTerm "F", [(6, [T $ Term "(", N $ NTerm "E", T $ Term ")"]), (7, [T $ Term "id"])])
     ]
   )
--}
 
 notlr0 :: Grammar
 notlr0 =
@@ -68,11 +68,12 @@ notlr0 =
       )
     ]
   )
+  -}
 
-symbols :: [Rule] -> S.Set Symbol
+symbols :: [Rules] -> S.Set Symbol
 symbols rules = S.unions $ map (S.fromList . f) rules
   where
-    f (n, nss) = N n : concatMap snd nss
+    f (n, nss) = N n : concatMap prod nss
 
 closure :: Eq a => (a -> a) -> a -> a
 closure f x = let next = f x in if x == next then x else closure f next
@@ -86,8 +87,8 @@ first (_, rules) = closure (\m -> foldr f m rules) seed
   where
     seed = M.fromList $ [(e, S.empty) | N e <- S.elems $ symbols rules]
     -- update first set with a rule
-    f :: Rule -> M.Map NTerm (S.Set Term) -> M.Map NTerm (S.Set Term)
-    f (l, rss) m = M.insertWith S.union l (S.unions $ map (f' . snd) rss) m
+    f :: Rules -> M.Map NTerm (S.Set Term) -> M.Map NTerm (S.Set Term)
+    f (l, rss) m = M.insertWith S.union l (S.unions $ map (f' . prod) rss) m
       where
         -- calculate first set with rhs of rule
         f' :: [Symbol] -> S.Set Term
@@ -104,8 +105,8 @@ follow gram@(start, rules) = closure (\m -> foldr f m rules) seed
     firstSet = first gram
     seed = M.fromList $ [if e == start then (e, S.singleton (Term "$")) else (e, S.empty) | N e <- S.elems $ symbols rules]
     -- update table with rule
-    f :: Rule -> M.Map NTerm (S.Set Term) -> M.Map NTerm (S.Set Term)
-    f (lhs, rhss) m = foldr (g . snd) m rhss
+    f :: Rules -> M.Map NTerm (S.Set Term) -> M.Map NTerm (S.Set Term)
+    f (lhs, rhss) m = foldr (g . prod) m rhss
       where
         -- update table with [Symbol]
         g :: [Symbol] -> M.Map NTerm (S.Set Term) -> M.Map NTerm (S.Set Term)
@@ -124,16 +125,16 @@ follow gram@(start, rules) = closure (\m -> foldr f m rules) seed
 
 type State = Int
 
-data Action = Shift State | Reduce Index | Accept
+data Action = Shift State | Reduce RuleIdx | Accept
   deriving (Show, Eq)
 
 -- move from one state to the next
 stepState :: Grammar -> Symbol -> S.Set RHS -> S.Set RHS
 stepState gram sym old = S.unions $ S.map f old
   where
-    f (i, l : ls) | l == sym = case ls of
-      (N n) : as -> S.insert (i, ls) $ genState n gram
-      x -> S.singleton (i, x)
+    f rhs@RHS {index = i, prod = l : ls} | l == sym = case ls of
+      (N n) : as -> S.insert (rhs {prod = ls}) $ genState n gram
+      x -> S.singleton (rhs {prod = x})
     f _ = S.empty
 
 -- create new state from nonterminal
@@ -145,7 +146,7 @@ genState n (start, rules) = fst $ closure f (S.fromList seed, seed)
     f :: (S.Set RHS, [RHS]) -> (S.Set RHS, [RHS])
     f (set, q : qs) = foldr tryInsert (set, qs) next
       where
-        next = case head $ snd q of
+        next = case head $ prod q of
           N n -> fromJust $ lookup n rules
           T t -> []
         tryInsert a (s, ls) = if not (S.member a s) then (S.insert a s, a : ls) else (s, ls)

@@ -6,25 +6,40 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (fromJust)
 import qualified Data.Sequence as A
 import qualified Data.Set as S
+import qualified Data.Tree as T
 import Parser.Internal
 
-{-
 type Table = A.Seq (M.Map Symbol Action)
 
-data Tree a = Leaf a | Tree a [a]
-  deriving (Show)
+leaf :: a -> T.Tree a
+leaf x = T.Node x []
 
-parseWith :: (Grammar -> Table) -> Grammar -> [Symbol] -> Tree Symbol
-parseWith parser grammar ls = parse' 0 [] $ map Leaf ls
+printAST :: T.Tree Symbol -> IO ()
+printAST = putStrLn . T.drawTree . fmap show
+
+parseWith :: (Grammar -> Table) -> Grammar -> [Symbol] -> T.Tree Symbol
+parseWith parser grammar ls = parse' 0 [] $ map leaf ls
   where
     table = parser grammar
-    parse' state stack (l : ls) =
-      let x = case l of Leaf a -> a; Tree a _ -> a
-       in case M.lookup x (fromJust $ table A.!? state) of
-            Just (Shift i) -> parse' i (l : stack) ls
-            Just (Reduce (i, lhs)) -> let rhs = fromJust $ find ((== i) . fst . fst) $ fromJust $ lookup lhs (snd grammar) in undefined
-            Nothing -> error "why"
-            -}
+    parse' state stack ll@(l : ls) =
+      case M.lookup (T.rootLabel l) (fromJust $ table A.!? state) of
+        -- shift token onto stack
+        Just (Shift i) -> parse' i ((l, state) : stack) ls
+        -- take tokens from stack and put pack to queue
+        Just (Reduce i lhs) ->
+          let rhs = fromJust $ find ((== i) . index) $ fromJust $ lookup lhs (snd grammar)
+              (matched, rest) = Bifunctor.first reverse $ splitAt (length $ prod rhs) stack
+              checkMatch :: [(T.Tree Symbol, Int)] -> [Symbol] -> Int
+              checkMatch m r =
+                if and (zipWith (\a b -> T.rootLabel (fst a) == b) m r)
+                  then snd $ head m -- return which state to backtrack to
+                  else error "why"
+           in if prod rhs == [T Empty]
+                then parse' state stack (T.Node (N lhs) [T.Node (T Empty) []] : ll)
+                else parse' (checkMatch matched (prod rhs)) rest (T.Node (N lhs) (map fst matched) : ll)
+        Just Accept -> l
+        Nothing -> error $ "didn't expect " ++ show ll ++ show state ++ show stack
+    parse' state stack [] = parse' state stack [leaf $ T EOF]
 
 lr0 :: Grammar -> A.Seq (M.Map Symbol Action)
 lr0 gram@(start, rules) = setAccept $ fmap snd $ fst $ closure f (A.singleton (seed, M.empty), 0)
@@ -38,8 +53,8 @@ lr0 gram@(start, rules) = setAccept $ fmap snd $ fst $ closure f (A.singleton (s
         -- no reduce possible
         ([], _) -> (S.foldr (g rhs) sq syms, n + 1)
         -- only one reduce possible
-        ([RHS {index = i}], []) ->
-          (A.adjust' (Bifunctor.second (const $ M.fromSet (const $ Reduce i) syms)) n sq, n + 1)
+        ([RHS {index = i, lhs = lhs}], []) ->
+          (A.adjust' (Bifunctor.second (const $ M.fromSet (const $ Reduce i lhs) syms)) n sq, n + 1)
         -- multiple reduces possible
         _ -> error "not lr0, multiple reduces possible"
       Nothing -> (sq, n) -- all states filled in
@@ -68,9 +83,9 @@ slr1 gram@(start, rules) = setAccept $ fmap snd $ fst $ closure f (A.singleton (
     f :: (A.Seq (S.Set RHS, M.Map Symbol Action), Int) -> (A.Seq (S.Set RHS, M.Map Symbol Action), Int)
     f (sq, n) = case sq A.!? n of
       Just (rhs, _) ->
-        let (reduces, shifts) = (S.partition ((== []) . prod) rhs)
+        let (reduces, shifts) = S.partition ((\a -> null a || a == [T Empty]) . prod) rhs
             foldShifts = S.foldr (g shifts) sq syms
-         in (S.foldr (\RHS {index = i, lhs = lhs} s -> S.foldr (\t a -> writeTableUnique n (T t) (Reduce i) a) s (fromJust $ M.lookup lhs followSet)) foldShifts reduces, n + 1)
+         in (S.foldr (\RHS {index = i, lhs = lhs} s -> S.foldr (\t a -> writeTableUnique n (T t) (Reduce i lhs) a) s (fromJust $ M.lookup lhs followSet)) foldShifts reduces, n + 1)
       Nothing -> (sq, n) -- all states filled in
       where
         -- decide whether a new state is needed for taking one step in a RHS

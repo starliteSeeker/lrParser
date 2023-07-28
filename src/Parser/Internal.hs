@@ -4,6 +4,8 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (fromJust)
 import qualified Data.Set as S
 
+-- * Data representation for grammar
+
 data Symbol
   = T Term
   | N NTerm
@@ -16,6 +18,7 @@ newtype NTerm = NTerm String
 -- terminal
 data Term
   = Empty
+  | EOF
   | Term String
   deriving (Show, Eq, Ord)
 
@@ -27,6 +30,8 @@ data RHS = RHS {index :: RuleIdx, lhs :: NTerm, prod :: [Symbol]}
   deriving (Eq, Ord)
 
 type RuleIdx = Int -- index for rules to reference when reducing
+
+-- * grammar for testing
 
 testGrammar :: Grammar
 testGrammar =
@@ -40,38 +45,38 @@ testGrammar =
     ]
   )
 
-{-
 g2 :: Grammar
 g2 =
   ( NTerm "E",
-    [ (NTerm "E", [(0, [N $ NTerm "T", N $ NTerm "E'"])]),
-      (NTerm "E'", [(1, [T $ Term "+", N $ NTerm "T", N $ NTerm "E'"]), (2, [T Empty])]),
-      (NTerm "T", [(3, [N $ NTerm "F", N $ NTerm "T'"])]),
-      (NTerm "T'", [(4, [T $ Term "*", N $ NTerm "F", N $ NTerm "T'"]), (5, [T Empty])]),
-      (NTerm "F", [(6, [T $ Term "(", N $ NTerm "E", T $ Term ")"]), (7, [T $ Term "id"])])
+    [ (NTerm "E", [RHS 0 (NTerm "E") [N $ NTerm "T", N $ NTerm "E'"]]),
+      (NTerm "E'", [RHS 1 (NTerm "E'") [T $ Term "+", N $ NTerm "T", N $ NTerm "E'"], RHS 2 (NTerm "E'") [T Empty]]),
+      (NTerm "T", [RHS 3 (NTerm "T") [N $ NTerm "F", N $ NTerm "T'"]]),
+      (NTerm "T'", [RHS 4 (NTerm "T'") [T $ Term "*", N $ NTerm "F", N $ NTerm "T'"], RHS 5 (NTerm "T'") [T Empty]]),
+      (NTerm "F", [RHS 6 (NTerm "F") [T $ Term "(", N $ NTerm "E", T $ Term ")"], RHS 7 (NTerm "F") [T $ Term "id"]])
     ]
   )
 
 notlr0 :: Grammar
 notlr0 =
   ( NTerm "S",
-    [ (NTerm "S", [((0, NTerm "S"), [N $ NTerm "E", T $ Term "$"])]),
+    [ (NTerm "S", [RHS 0 (NTerm "S") [N $ NTerm "E", T $ Term "$"]]),
       ( NTerm "E",
-        [ ((1, NTerm "E"), [N $ NTerm "E", T $ Term "+", N $ NTerm "T"]),
-          ((2, NTerm "E"), [N $ NTerm "T"])
+        [ RHS 1 (NTerm "E") [N $ NTerm "E", T $ Term "+", N $ NTerm "T"],
+          RHS 2 (NTerm "E") [N $ NTerm "T"]
         ]
       ),
       ( NTerm "T",
-        [ ((3, NTerm "T"), [N $ NTerm "T", T $ Term "*", T $ Term "#"]),
-          ((4, NTerm "T"), [T $ Term "#"])
+        [ RHS 3 (NTerm "T") [N $ NTerm "T", T $ Term "*", T $ Term "#"],
+          RHS 4 (NTerm "T") [T $ Term "#"]
         ]
       )
     ]
   )
-  -}
+
+-- * helper functions
 
 symbols :: [Rules] -> S.Set Symbol
-symbols rules = S.unions $ map (S.fromList . f) rules
+symbols rules = S.insert (T EOF) $ S.unions $ map (S.fromList . f) rules
   where
     f (n, nss) = N n : concatMap prod nss
 
@@ -103,7 +108,7 @@ follow :: Grammar -> M.Map NTerm (S.Set Term)
 follow gram@(start, rules) = closure (\m -> foldr f m rules) seed
   where
     firstSet = first gram
-    seed = M.fromList $ [if e == start then (e, S.singleton (Term "$")) else (e, S.empty) | N e <- S.elems $ symbols rules]
+    seed = M.fromList $ [if e == start then (e, S.singleton EOF) else (e, S.empty) | N e <- S.elems $ symbols rules]
     -- update table with rule
     f :: Rules -> M.Map NTerm (S.Set Term) -> M.Map NTerm (S.Set Term)
     f (lhs, rhss) m = foldr (g . prod) m rhss
@@ -125,7 +130,7 @@ follow gram@(start, rules) = closure (\m -> foldr f m rules) seed
 
 type State = Int
 
-data Action = Shift State | Reduce RuleIdx | Accept
+data Action = Shift State | Reduce RuleIdx NTerm | Accept
   deriving (Show, Eq)
 
 -- move from one state to the next

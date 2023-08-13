@@ -28,13 +28,22 @@ type Grammar = (NTerm, [Rules]) -- (start symbol, rewriting rules)
 
 type Rules = (NTerm, [Rule])
 
-data Rule = Rule {index :: RuleIdx, prod :: [Symbol], followI :: [Term]}
-  deriving (Eq, Ord)
+data Rule = Rule {index :: RuleIdx, prod :: [Symbol], followI :: S.Set Term}
+  deriving (Eq, Ord, Show)
+
+{-
+instance Show Rule where
+  show Rule {index = Idx {ruleNo = i, leftSym = NTerm l}, prod = p} =
+    "\"" ++ show i ++ " " ++ show l ++ " -> " ++ show p ++ "\""
+-}
 
 newRule :: Int -> NTerm -> [Symbol] -> Rule
-newRule i l r = Rule (l, i) r []
+newRule i l r = Rule (Idx {ruleNo = i, leftSym = l}) r S.empty
 
-type RuleIdx = (NTerm, Int) -- index for rules to reference when reducing
+data RuleIdx = Idx {ruleNo :: Int, leftSym :: NTerm}
+  deriving (Eq, Ord, Show)
+
+-- (NTerm, Int, Int) -- index for rules to reference when reducing
 
 -- * grammar for testing
 
@@ -73,8 +82,8 @@ g2 =
     ]
   )
 
-notlr0 :: Grammar
-notlr0 =
+slr1Grammar :: Grammar
+slr1Grammar =
   ( NTerm "S",
     [ (NTerm "S", [newRule 0 (NTerm "S") [N $ NTerm "E", T $ Term "$"]]),
       ( NTerm "E",
@@ -87,6 +96,36 @@ notlr0 =
           newRule 4 (NTerm "T") [T $ Term "#"]
         ]
       )
+    ]
+  )
+
+lalr1Grammar :: Grammar
+lalr1Grammar =
+  ( NTerm "S'",
+    [ (NTerm "S'", [newRule 0 (NTerm "S'") [N $ NTerm "S", T $ Term "$"]]),
+      ( NTerm "S",
+        [ newRule 1 (NTerm "S") [N $ NTerm "B", T $ Term "b", T $ Term "b"],
+          newRule 2 (NTerm "S") [T $ Term "a", T $ Term "a", T $ Term "b"],
+          newRule 3 (NTerm "S") [T $ Term "b", N $ NTerm "B", T $ Term "a"]
+        ]
+      ),
+      (NTerm "B", [newRule 4 (NTerm "B") [T $ Term "a"]])
+    ]
+  )
+
+lr1Grammar :: Grammar
+lr1Grammar =
+  ( NTerm "S'",
+    [ (NTerm "S'", [newRule 0 (NTerm "S'") [N $ NTerm "S", T $ Term "$"]]),
+      ( NTerm "S",
+        [ newRule 1 (NTerm "S") [T $ Term "a", N $ NTerm "B", T $ Term "c"],
+          newRule 2 (NTerm "S") [T $ Term "b", N $ NTerm "C", T $ Term "c"],
+          newRule 3 (NTerm "S") [T $ Term "a", N $ NTerm "C", T $ Term "d"],
+          newRule 4 (NTerm "S") [T $ Term "b", N $ NTerm "B", T $ Term "d"]
+        ]
+      ),
+      (NTerm "B", [newRule 5 (NTerm "B") [T $ Term "e"]]),
+      (NTerm "C", [newRule 6 (NTerm "B") [T $ Term "e"]])
     ]
   )
 
@@ -174,29 +213,40 @@ genState n (start, rules) = fst $ closure f (S.fromList seed, seed)
         tryInsert a (s, ls) = if not (S.member a s) then (S.insert a s, a : ls) else (s, ls)
     f a = a
 
+{-
+fillSubindex :: S.Set Rule -> S.Set Rule
+fillSubindex old = fst $ S.foldr (\o (s, n) -> (S.insert (writeSubindex n o) s, n + 1)) (S.empty, 0) old
+  where
+    writeSubindex i r@Rule {index = idx} = r {index = idx {subIndex = i}}
+    -}
+
 insertUnique :: Symbol -> Action -> M.Map Symbol Action -> M.Map Symbol Action
 insertUnique = M.insertWith (\v vv -> error (show v ++ " collides with " ++ show vv))
 
-writeTableUnique :: State -> Symbol -> Action -> A.Seq (S.Set Rule, M.Map Symbol Action) -> A.Seq (S.Set Rule, M.Map Symbol Action)
+type Table = A.Seq (M.Map Symbol Action)
+
+type Table' = A.Seq (S.Set Rule, M.Map Symbol Action)
+
+writeTableUnique :: State -> Symbol -> Action -> Table' -> Table'
 writeTableUnique i j x = A.adjust' (Bifunctor.second (insertUnique j x)) i
 
 -- an awful name for a funciton that might never be changed
-commonPartsOfParsers :: (NTerm -> S.Set Symbol) -> Grammar -> A.Seq (M.Map Symbol Action)
-commonPartsOfParsers reduceSet gram@(start, rules) = setAccept $ fmap snd $ fst $ closure f (A.singleton (seed, M.empty), 0)
+commonPartsOfParsers :: (Rule -> S.Set Symbol) -> Grammar -> Table'
+commonPartsOfParsers reduceSet gram@(start, rules) = setAccept $ fst $ closure f (A.singleton (seed, M.empty), 0)
   where
     syms = symbols rules
     seed = genState start gram
     -- fill in table for state n
-    f :: (A.Seq (S.Set Rule, M.Map Symbol Action), Int) -> (A.Seq (S.Set Rule, M.Map Symbol Action), Int)
+    f :: (Table', Int) -> (Table', Int)
     f (sq, n) = case sq A.!? n of
       Just (rhs, _) ->
         let (reduces, shifts) = S.partition ((\a -> null a || a == [T Empty]) . prod) rhs
             foldShifts = S.foldr (g shifts) sq syms
-         in (S.foldr (\Rule {index = (lhs, i)} s -> S.foldr (\t a -> writeTableUnique n t (Reduce (lhs, i)) a) s (reduceSet lhs)) foldShifts reduces, n + 1)
+         in (S.foldr (\rule@Rule {index = idx} s -> S.foldr (\t a -> writeTableUnique n t (Reduce idx) a) s (reduceSet rule)) foldShifts reduces, n + 1)
       Nothing -> (sq, n) -- all states filled in
       where
         -- decide whether a new state is needed for taking one step in a Rule
-        g :: S.Set Rule -> Symbol -> A.Seq (S.Set Rule, M.Map Symbol Action) -> A.Seq (S.Set Rule, M.Map Symbol Action)
+        g :: S.Set Rule -> Symbol -> Table' -> Table'
         g curr s a =
           let nextState = stepState gram s curr
            in if S.null nextState
@@ -206,4 +256,40 @@ commonPartsOfParsers reduceSet gram@(start, rules) = setAccept $ fmap snd $ fst 
                   Just nexti -> writeTableUnique n s (Shift nexti) a
                   -- add new state to table
                   Nothing -> A.adjust' (Bifunctor.second (insertUnique s (Shift $ A.length a))) n a A.|> (nextState, M.empty)
-    setAccept = A.adjust' (insertUnique (N start) Accept) 0
+    setAccept = A.adjust' (Bifunctor.second (insertUnique (N start) Accept)) 0
+
+-- table with only `Shift` filled in
+initTable :: Grammar -> Table'
+initTable gram@(start, rules) = setAccept $ fst $ closure f (A.singleton (seed, M.empty), 0)
+  where
+    syms = symbols rules
+    seed = genState start gram
+    -- fill in table for state n
+    f :: (Table', Int) -> (Table', Int)
+    f (sq, n) = case sq A.!? n of
+      Just (rhs, _) ->
+        let (reduces, shifts) = S.partition ((\a -> null a || a == [T Empty]) . prod) rhs
+            foldShifts = S.foldr (g shifts) sq syms
+         in (S.foldr (g shifts) sq syms, n + 1)
+      Nothing -> (sq, n) -- all states filled in
+      where
+        -- decide whether a new state is needed for taking one step in a Rule
+        g :: S.Set Rule -> Symbol -> Table' -> Table'
+        g curr s a =
+          let nextState = stepState gram s curr
+           in if S.null nextState
+                then a
+                else case A.findIndexL ((== nextState) . fst) a of
+                  -- next state already exists in table
+                  Just nexti -> writeTableUnique n s (Shift nexti) a
+                  -- add new state to table
+                  Nothing -> A.adjust' (Bifunctor.second (insertUnique s (Shift $ A.length a))) n a A.|> (nextState, M.empty)
+    setAccept = A.adjust' (Bifunctor.second (insertUnique (N start) Accept)) 0
+
+fillReduce :: (Rule -> S.Set Symbol) -> Table' -> Table'
+fillReduce reduceSet = fmap (\(rules, table) -> (rules, S.foldr f table rules))
+  where
+    f rule@Rule {index = i, prod = p} m = if null p then S.foldr (\s m' -> insertUnique s (Reduce i) m') m (reduceSet rule) else m
+
+readTable :: Ord k => Int -> k -> A.Seq (M.Map k a) -> Maybe a
+readTable state sym table = M.lookup sym $ fromJust $ table A.!? state
